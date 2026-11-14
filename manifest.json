@@ -1,0 +1,10 @@
+{
+  "id": "powerpoint-style-slides",
+  "name": "PowerPoint-style Slides",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Present notes split by --- as slides with automatic layouts, auto-fit (nothing gets cropped), zoom, laser pointer, in-slide editing and PDF export.",
+  "author": "Tibilz",
+  "isDesktopOnly": true,
+  "authorUrl": "https://github.com/Tibilz"
+}

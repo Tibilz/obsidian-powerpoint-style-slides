@@ -1,0 +1,29 @@
+name: Release
+
+# Neuer Tag (z. B. 0.1.1) → baut das Plugin und legt ein GitHub-Release
+# mit main.js, manifest.json und styles.css an (Entwurf, zum Prüfen vor Veröffentlichung).
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Release anlegen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" --title "$tag" --draft main.js manifest.json styles.css
