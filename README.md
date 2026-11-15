@@ -4,7 +4,7 @@ Present Obsidian notes as slides – like the built-in Slides core plugin (slide
 
 - **Nothing gets cropped:** overfull slides are scaled down automatically.
 - **Automatic PowerPoint-like layouts:** bullet points left, image right, code in the middle – overridable per slide with flags.
-- **Image captions**, **zoom**, **laser pointer**, **in-slide editing** (changes are written back to the note) and **PDF export** (one slide per page, 16:9).
+- **Image captions**, **zoom**, **laser pointer**, **pen (temporary drawings)**, **in-slide editing** (changes are written back to the note) and **PDF export** (one slide per page, 16:9).
 
 Desktop only. The UI is currently German.
 
@@ -53,8 +53,10 @@ Eine kursive Zeile direkt unter dem Bild:
 | Ziehen / Scrollen (gezoomt) | verschieben |
 | `0` | Zoom zurücksetzen |
 | `L` oder Fadenkreuz oben rechts | Laserpointer an/aus |
+| `D` oder Stift oben rechts | Zeichnen (schwarz) – nur während dieser Präsentation sichtbar, nichts wird gespeichert |
+| Cmd+Z / `C` | letzten Strich rückgängig / Zeichnungen der Folie löschen |
 | `E` oder Schloss oben rechts | Direkt in der Folie bearbeiten (wird live in die Notiz gespeichert) |
-| Esc | Bearbeiten beenden → Zoom zurück → Laser aus → Präsentation beenden |
+| Esc | Bearbeiten beenden → Zoom zurück → Laser/Stift aus → Präsentation beenden |
 
 ## Bearbeiten in der Folie
 Bei offenem Schloss tippst du direkt in den formatierten Text (Cmd+B / Cmd+I für fett/kursiv).

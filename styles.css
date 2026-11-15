@@ -71,9 +71,34 @@
 .sf-tools:hover .sf-tool, .sf-tool.is-active { opacity: 1; }
 .sf-tool.is-active { background: var(--interactive-accent); }
 
-/* Laserpointer */
-.sf-laser { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+/* Laserpointer: ein einzelner Punkt, der per transform verschoben wird */
+.sf-laser-dot {
+	position: absolute;
+	top: -8px;
+	left: -8px;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background: radial-gradient(circle, #fff 0 15%, #ff2a2a 35%, rgba(255, 0, 0, 0.5) 60%, rgba(255, 0, 0, 0) 75%);
+	pointer-events: none;
+	z-index: 4;
+	will-change: transform;
+	display: none;
+}
+.sf-laser-on .sf-laser-dot.is-visible { display: block; }
 .sf-presenter.sf-laser-on .sf-viewport { cursor: none; }
+
+/* Stift: Zeichenfläche liegt über der Folie und zoomt mit */
+.sf-ink {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	z-index: 2;
+	pointer-events: none;
+	touch-action: none;
+}
+.sf-pen-on .sf-ink { pointer-events: auto; cursor: crosshair; }
 
 /* Bearbeiten direkt in der Folie */
 .sf-editing .sf-viewport { cursor: auto; }

@@ -4,6 +4,15 @@ import { Deck, joinChunks, parseDeck, serializeDeck } from "./parser";
 import { renderSlide, RenderedSlide, SLIDE_H, SLIDE_W } from "./slide";
 import { blockToMd, canEditWysiwyg } from "./wysiwyg";
 
+type Tool = "none" | "laser" | "pen";
+type Point = { x: number; y: number };
+type Stroke = Point[];
+
+/** Stift: Farbe, Breite (in Folien-Pixeln), Auflösungsfaktor der Zeichenfläche (für scharfes Zoomen) */
+const PEN_COLOR = "#000";
+const PEN_WIDTH = 4;
+const INK_RES = 2;
+
 const isBlank = (s: string) => s.replace(/<!--[\s\S]*?-->/g, "").trim() === "";
 
 /** Zusammenhängende Elemente, die einen Bereich von Markdown-Blöcken darstellen */
@@ -22,7 +31,9 @@ export class Presenter {
 	private counter!: HTMLElement;
 	private lockBtn!: HTMLElement;
 	private laserBtn!: HTMLElement;
-	private laserCanvas!: HTMLCanvasElement;
+	private penBtn!: HTMLElement;
+	private laserDot!: HTMLElement;
+	private ink!: HTMLCanvasElement;
 
 	private deck!: Deck;
 	/** Indizes der nicht-leeren Folien in deck.slides */
@@ -38,10 +49,11 @@ export class Presenter {
 	private dirty = false;
 	private saveSoon = debounce(() => this.save(), 500, true);
 
-	private laser = false;
-	private trail: { x: number; y: number; t: number }[] = [];
-	private laserVisible = false;
-	private laserFrame = 0;
+	/** Aktives Zeigewerkzeug (schließt sich gegenseitig mit dem Bearbeiten aus) */
+	private tool: Tool = "none";
+	/** Zeichnungen pro Folie – nur im Speicher, verschwinden mit dem Beenden der Präsentation */
+	private strokes = new Map<number, Stroke[]>();
+	private activeStroke: Stroke | null = null;
 
 	private zoom = 1;
 	private tx = 0;
@@ -75,7 +87,10 @@ export class Presenter {
 		this.viewport = this.stage.createDiv({ cls: "sf-viewport" });
 		this.zoomEl = this.viewport.createDiv({ cls: "sf-zoom" });
 		this.scaler = this.zoomEl.createDiv({ cls: "sf-scaler" });
-		this.laserCanvas = this.stage.createEl("canvas", { cls: "sf-laser" });
+		this.laserDot = this.stage.createDiv({ cls: "sf-laser-dot" });
+		this.ink = this.scaler.createEl("canvas", { cls: "sf-ink" });
+		this.ink.width = SLIDE_W * INK_RES;
+		this.ink.height = SLIDE_H * INK_RES;
 
 		const bar = this.root.createDiv({ cls: "sf-bar" });
 		const btn = (parent: HTMLElement, cls: string, icon: string, title: string, fn: () => void) => {
@@ -92,7 +107,8 @@ export class Presenter {
 		btn(bar, "sf-btn", "x", "Beenden (Esc)", () => this.close());
 
 		const tools = this.root.createDiv({ cls: "sf-tools" });
-		this.laserBtn = btn(tools, "sf-tool", "crosshair", "Laserpointer (L)", () => this.toggleLaser());
+		this.laserBtn = btn(tools, "sf-tool", "crosshair", "Laserpointer (L)", () => this.setTool(this.tool === "laser" ? "none" : "laser"));
+		this.penBtn = btn(tools, "sf-tool", "pencil", "Stift (D) – Cmd+Z rückgängig, C Folie leeren", () => this.setTool(this.tool === "pen" ? "none" : "pen"));
 		this.lockBtn = btn(tools, "sf-tool", "lock", "Bearbeiten entsperren (E)", () => this.toggleEdit());
 
 		this.listen(window, "keydown", (e) => this.onKey(e as KeyboardEvent), true);
@@ -133,11 +149,12 @@ export class Presenter {
 		this.component.addChild(child);
 		const rendered = await renderSlide(this.plugin.app, this.deck.slides[this.slideIndex], this.file.path, host, child, this.plugin.settings);
 		if (token !== this.renderToken) { host.remove(); this.component.removeChild(child); return; }
-		Array.from(this.scaler.children).forEach((c) => { if (c !== host) c.remove(); });
+		this.scaler.querySelectorAll(".sf-render-host").forEach((c) => { if (c !== host) c.remove(); });
 		if (this.currentChild) this.component.removeChild(this.currentChild);
 		this.currentChild = child;
 		this.current = rendered;
 		host.style.visibility = "";
+		this.redrawInk();
 		if (this.editing) this.makeEditable();
 		this.layoutStage();
 	}
@@ -150,9 +167,6 @@ export class Presenter {
 		this.scaler.style.width = `${SLIDE_W * this.fitScale}px`;
 		this.scaler.style.height = `${SLIDE_H * this.fitScale}px`;
 		this.scaler.style.setProperty("--sf-fit", String(this.fitScale));
-		const dpr = window.devicePixelRatio || 1;
-		this.laserCanvas.width = this.stage.clientWidth * dpr;
-		this.laserCanvas.height = this.stage.clientHeight * dpr;
 		this.applyZoom();
 	}
 
@@ -212,7 +226,7 @@ export class Presenter {
 	}
 
 	private onDblClick(e: MouseEvent) {
-		if (this.editing) return;
+		if (this.editing || this.tool === "pen") return;
 		if (this.zoom > 1) this.resetZoom();
 		else this.zoomAt(2.5, e.clientX, e.clientY);
 	}
@@ -222,13 +236,13 @@ export class Presenter {
 		let moved = false;
 		this.listen(this.viewport, "pointerdown", (ev) => {
 			const e = ev as PointerEvent;
-			if (e.button !== 0 || this.editing) return;
+			if (e.button !== 0 || this.editing || this.tool === "pen") return;
 			drag = { x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty };
 			moved = false;
 		});
 		this.listen(window, "pointermove", (ev) => {
 			const e = ev as PointerEvent;
-			if (this.laser) this.laserMove(e);
+			if (this.tool === "laser") this.laserMove(e);
 			if (!drag || this.zoom <= 1) return;
 			if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 3) moved = true;
 			this.tx = drag.tx + e.clientX - drag.x;
@@ -236,10 +250,11 @@ export class Presenter {
 			this.clampPan(); this.applyZoom();
 		});
 		this.listen(window, "pointerup", () => { drag = null; });
-		this.listen(this.stage, "pointerleave", () => { this.laserVisible = false; });
+		this.listen(this.stage, "pointerleave", () => this.laserDot.removeClass("is-visible"));
+		this.setupInk();
 		this.listen(this.viewport, "click", (ev) => {
 			const e = ev as MouseEvent;
-			if (this.editing || this.laser || moved || this.zoom > 1) return;
+			if (this.editing || this.tool !== "none" || moved || this.zoom > 1) return;
 			if ((e.target as HTMLElement).closest("a")) return;
 			// Klick rechts = weiter, links = zurück (wie im Standard-Präsentationsmodus)
 			const r = this.viewport.getBoundingClientRect();
@@ -247,76 +262,118 @@ export class Presenter {
 		});
 	}
 
-	// ---------- Laserpointer ----------
+	// ---------- Laserpointer & Stift ----------
 
-	private toggleLaser(force?: boolean) {
-		const on = force ?? !this.laser;
-		if (on === this.laser) return;
-		if (on && this.editing) void this.toggleEdit(false);
-		this.laser = on;
-		this.root.toggleClass("sf-laser-on", on);
-		this.laserBtn.toggleClass("is-active", on);
-		this.trail = [];
-		this.laserVisible = false;
-		if (on) this.laserFrame = requestAnimationFrame(() => this.drawLaser());
-		else { cancelAnimationFrame(this.laserFrame); this.clearLaser(); }
+	private setTool(tool: Tool) {
+		if (tool === this.tool) return;
+		if (tool !== "none" && this.editing) void this.toggleEdit(false);
+		this.tool = tool;
+		this.root.toggleClass("sf-laser-on", tool === "laser");
+		this.root.toggleClass("sf-pen-on", tool === "pen");
+		this.laserBtn.toggleClass("is-active", tool === "laser");
+		this.penBtn.toggleClass("is-active", tool === "pen");
+		if (tool !== "laser") this.laserDot.removeClass("is-visible");
 	}
 
+	/** Der Laser ist ein einzelnes Element, das nur verschoben wird (läuft auf der GPU, kein Neuzeichnen) */
 	private laserMove(e: PointerEvent) {
 		const r = this.stage.getBoundingClientRect();
 		const x = e.clientX - r.left;
 		const y = e.clientY - r.top;
-		this.laserVisible = x >= 0 && y >= 0 && x <= r.width && y <= r.height;
-		this.trail.push({ x, y, t: performance.now() });
-		this.lastLaser = { x, y };
+		const inside = x >= 0 && y >= 0 && x <= r.width && y <= r.height;
+		this.laserDot.toggleClass("is-visible", inside);
+		this.laserDot.style.transform = `translate(${x}px, ${y}px)`;
 	}
 
-	private clearLaser() {
-		const ctx = this.laserCanvas.getContext("2d");
-		ctx?.clearRect(0, 0, this.laserCanvas.width, this.laserCanvas.height);
+	private inkPoint(e: PointerEvent): Point {
+		const r = this.ink.getBoundingClientRect();
+		return { x: ((e.clientX - r.left) / r.width) * SLIDE_W, y: ((e.clientY - r.top) / r.height) * SLIDE_H };
 	}
 
-	private drawLaser() {
-		if (!this.laser) return;
-		const ctx = this.laserCanvas.getContext("2d");
-		const dpr = window.devicePixelRatio || 1;
-		const now = performance.now();
-		const LIFE = 350;
-		this.trail = this.trail.filter((p) => now - p.t < LIFE);
-		if (ctx) {
-			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-			ctx.clearRect(0, 0, this.laserCanvas.width, this.laserCanvas.height);
-			ctx.lineCap = "round";
-			ctx.lineJoin = "round";
-			for (let i = 1; i < this.trail.length; i++) {
-				const a = this.trail[i - 1];
-				const b = this.trail[i];
-				const life = 1 - (now - b.t) / LIFE;
-				ctx.strokeStyle = `rgba(255, 40, 40, ${0.55 * life})`;
-				ctx.lineWidth = 2 + 6 * life;
-				ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+	private setupInk() {
+		this.listen(this.ink, "pointerdown", (ev) => {
+			const e = ev as PointerEvent;
+			if (this.tool !== "pen" || e.button !== 0) return;
+			e.preventDefault();
+			e.stopPropagation();
+			try { this.ink.setPointerCapture(e.pointerId); } catch { /* Zeiger nicht mehr aktiv – Zeichnen geht trotzdem */ }
+			this.activeStroke = [this.inkPoint(e)];
+			const list = this.strokes.get(this.slideIndex) ?? [];
+			list.push(this.activeStroke);
+			this.strokes.set(this.slideIndex, list);
+			this.drawSegment(this.activeStroke, 0);
+		});
+		this.listen(this.ink, "pointermove", (ev) => {
+			const e = ev as PointerEvent;
+			const stroke = this.activeStroke;
+			if (!stroke) return;
+			// Zwischenpunkte mitnehmen, damit schnelle Striche glatt bleiben
+			const events = e.getCoalescedEvents?.() ?? [e];
+			for (const ce of events.length ? events : [e]) {
+				stroke.push(this.inkPoint(ce));
+				this.drawSegment(stroke, stroke.length - 2);
 			}
-			const last = this.lastLaser;
-			if (last && this.laserVisible) {
-				const g = ctx.createRadialGradient(last.x, last.y, 0, last.x, last.y, 18);
-				g.addColorStop(0, "rgba(255, 255, 255, 1)");
-				g.addColorStop(0.18, "rgba(255, 50, 50, 1)");
-				g.addColorStop(0.45, "rgba(255, 0, 0, 0.45)");
-				g.addColorStop(1, "rgba(255, 0, 0, 0)");
-				ctx.fillStyle = g;
-				ctx.beginPath(); ctx.arc(last.x, last.y, 18, 0, Math.PI * 2); ctx.fill();
-			}
+		});
+		const end = () => { this.activeStroke = null; };
+		this.listen(this.ink, "pointerup", end);
+		this.listen(this.ink, "pointercancel", end);
+	}
+
+	private inkCtx(): CanvasRenderingContext2D | null {
+		const ctx = this.ink.getContext("2d");
+		if (!ctx) return null;
+		ctx.setTransform(INK_RES, 0, 0, INK_RES, 0, 0);
+		ctx.strokeStyle = PEN_COLOR;
+		ctx.fillStyle = PEN_COLOR;
+		ctx.lineWidth = PEN_WIDTH;
+		ctx.lineCap = "round";
+		ctx.lineJoin = "round";
+		return ctx;
+	}
+
+	/** Zeichnet nur das neue Stück eines Strichs (ab Punkt i) */
+	private drawSegment(stroke: Stroke, i: number) {
+		const ctx = this.inkCtx();
+		if (!ctx) return;
+		if (stroke.length === 1 || i < 0) {
+			ctx.beginPath(); ctx.arc(stroke[0].x, stroke[0].y, PEN_WIDTH / 2, 0, Math.PI * 2); ctx.fill();
+			return;
 		}
-		this.laserFrame = requestAnimationFrame(() => this.drawLaser());
+		ctx.beginPath();
+		ctx.moveTo(stroke[i].x, stroke[i].y);
+		ctx.lineTo(stroke[i + 1].x, stroke[i + 1].y);
+		ctx.stroke();
 	}
-	private lastLaser: { x: number; y: number } | null = null;
+
+	private redrawInk() {
+		const ctx = this.inkCtx();
+		if (!ctx) return;
+		ctx.clearRect(0, 0, SLIDE_W, SLIDE_H);
+		for (const stroke of this.strokes.get(this.slideIndex) ?? []) {
+			if (stroke.length === 1) { this.drawSegment(stroke, 0); continue; }
+			ctx.beginPath();
+			ctx.moveTo(stroke[0].x, stroke[0].y);
+			for (let i = 1; i < stroke.length; i++) ctx.lineTo(stroke[i].x, stroke[i].y);
+			ctx.stroke();
+		}
+	}
+
+	private undoStroke() {
+		this.strokes.get(this.slideIndex)?.pop();
+		this.redrawInk();
+	}
+
+	private clearInk() {
+		this.strokes.delete(this.slideIndex);
+		this.redrawInk();
+	}
 
 	// ---------- Bearbeiten direkt in der Folie ----------
 
 	private async toggleEdit(force?: boolean) {
 		const on = force ?? !this.editing;
 		if (on === this.editing) return;
-		if (on && this.laser) this.toggleLaser(false);
+		if (on) this.setTool("none");
 		this.editing = on;
 		this.root.toggleClass("sf-editing", on);
 		setIcon(this.lockBtn, on ? "lock-open" : "lock");
@@ -492,14 +549,17 @@ export class Presenter {
 		else if (k === "Home") { handled(); this.go(0); }
 		else if (k === "End") { handled(); this.go(this.visible.length - 1); }
 		else if (k === "e" || k === "E") { handled(); void this.toggleEdit(); }
-		else if (k === "l" || k === "L") { handled(); this.toggleLaser(); }
+		else if (k === "l" || k === "L") { handled(); this.setTool(this.tool === "laser" ? "none" : "laser"); }
+		else if (k === "d" || k === "D") { handled(); this.setTool(this.tool === "pen" ? "none" : "pen"); }
+		else if (k === "c" || k === "C") { handled(); this.clearInk(); }
+		else if ((e.metaKey || e.ctrlKey) && (k === "z" || k === "Z")) { handled(); this.undoStroke(); }
 		else if (k === "+" || k === "=") { handled(); this.zoomAtCenter(1.25); }
 		else if (k === "-") { handled(); this.zoomAtCenter(0.8); }
 		else if (k === "0") { handled(); this.resetZoom(); }
 		else if (k === "Escape") {
 			handled();
 			if (this.zoom > 1) this.resetZoom();
-			else if (this.laser) this.toggleLaser(false);
+			else if (this.tool !== "none") this.setTool("none");
 			else this.close();
 		} else if (!e.metaKey && !e.ctrlKey) {
 			// Obsidian-Hotkeys im Hintergrund nicht auslösen
@@ -518,8 +578,6 @@ export class Presenter {
 	async close() {
 		if (!this.root) return;
 		await this.flush();
-		this.laser = false;
-		cancelAnimationFrame(this.laserFrame);
 		this.cleanup.forEach((f) => f());
 		this.cleanup = [];
 		this.component.unload();

@@ -250,7 +250,15 @@ function waitForMedia(el: HTMLElement, timeout = 4000): Promise<void> {
 	]);
 }
 
-const frame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+/**
+ * Auf das nächste Frame warten – mit Zeitlimit, denn in verdeckten/minimierten Fenstern
+ * pausiert requestAnimationFrame (sonst hinge z. B. ein PDF-Export im Hintergrund).
+ */
+const frame = () =>
+	new Promise<void>((r) => {
+		const t = window.setTimeout(r, 100);
+		requestAnimationFrame(() => { window.clearTimeout(t); r(); });
+	});
 
 export interface RenderedSlide {
 	slide: HTMLElement;
