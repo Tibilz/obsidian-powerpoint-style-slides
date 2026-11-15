@@ -1,6 +1,6 @@
 {
   "name": "powerpoint-style-slides",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Present Obsidian notes as PowerPoint-style slides",
   "main": "main.js",
   "scripts": {
